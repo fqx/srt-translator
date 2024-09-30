@@ -12,6 +12,7 @@ from langcodes import Language
 import json
 import tmdbsimple as tmdb
 from fuzzywuzzy import fuzz
+import chardet
 
 # load env
 load_dotenv()
@@ -31,6 +32,31 @@ latest_context = ""
 # Semaphore for controlling concurrency.
 MAX_CONCURRENT_REQUESTS = 5
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+
+def read_file_with_auto_encoding(file_path):
+    # Try to detect the file's encoding
+    with open(file_path, 'rb') as file:
+        raw_data = file.read()
+
+    detected = chardet.detect(raw_data)
+    encoding = detected['encoding']
+
+    # List of encodings to try if detection fails or gives an error
+    fallback_encodings = ['utf-8', 'GBK', 'iso-8859-1', 'windows-1252', 'ascii']
+
+    # Try the detected encoding first, then fall back to others if it fails
+    encodings_to_try = [encoding] + [e for e in fallback_encodings if e != encoding]
+
+    for enc in encodings_to_try:
+        try:
+            with open(file_path, 'r', encoding=enc) as file:
+                return file.read()
+        except UnicodeDecodeError:
+            continue
+
+    # If all encodings fail, raise an exception
+    raise ValueError(f"Unable to decode the file {file_path} with any of the attempted encodings.")
 
 
 async def get_movie_info(filename):
@@ -224,7 +250,7 @@ async def validation(translated_chunk, original_chunk, movie_info, language, max
 
             return '<SEP>'.join(translated_chunk_list)
 
-        logging.warning(f"Validation failed. {attempt} try to get a new translation.")
+        logging.warning(f"Validation failed. {attempt} attempts to get a new translation.")
         async with aiohttp.ClientSession() as session:
             translated_chunk = await translate_subtitle_part(session, original_chunk, movie_info, language)
             translated_chunk_list = re.split(r'<SEP>', translated_chunk)
@@ -306,8 +332,7 @@ async def main(input_path, output_file, language):
         global latest_context
         latest_context = movie_info
 
-        with open(input_file, 'r', encoding='utf-8') as f:
-            subtitle_content = f.read()
+        subtitle_content = read_file_with_auto_encoding(input_file)
 
         subtitle_parts, time_codes = split_subtitle(subtitle_content)
 
