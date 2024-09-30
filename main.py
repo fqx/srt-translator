@@ -203,14 +203,53 @@ async def process_with_llm(session, text, story_background, language, max_retrie
     return text  # If all retries fail, return the original text.
 
 
-def reassemble_subtitle(translated_parts, time_codes, subtitle_parts):
+async def validation(translated_chunk, original_chunk, movie_info, language, max_retries=3):
+    """
+    check the validation of translated_chunk
+    """
+    attempt=1
+    translated_chunk_list = re.split(r'<SEP>', translated_chunk)
+    original_chunk_list = re.split(r'<SEP>', original_chunk)
+
+    while len(translated_chunk_list) != len(original_chunk_list):
+        if attempt > max_retries:
+        # align translated chunk to original chunk
+            logging.warning("Align translated chunk arbitrarily.")
+            if len(translated_chunk_list) > len(original_chunk_list):
+                # Cut off A if it's longer than B
+                translated_chunk_list = translated_chunk_list[:len(original_chunk_list)]
+            elif len(translated_chunk_list) < len(original_chunk_list):
+                # Add empty strings to A if it's shorter than B
+                translated_chunk_list.extend([''] * (len(original_chunk_list) - len(translated_chunk_list)))
+
+            return '<SEP>'.join(translated_chunk_list)
+
+        logging.warning(f"Validation failed. {attempt} try to get a new translation.")
+        async with aiohttp.ClientSession() as session:
+            translated_chunk = await translate_subtitle_part(session, original_chunk, movie_info, language)
+            translated_chunk_list = re.split(r'<SEP>', translated_chunk)
+
+        attempt += 1
+
+    else:
+        logging.info("Validation passed.")
+        return translated_chunk
+
+
+async def reassemble_subtitle(translated_parts, time_codes, subtitle_parts, movie_info, language):
     """
     Reassemble the translated text with time codes and format characters
     """
     reassembled = []
     time_code_index = 0
+
+    tasks = [validation(translated_chunk, original_chunk, movie_info, language) for (translated_chunk, original_chunk) in zip(translated_parts, subtitle_parts)]
+    translated_parts = await asyncio.gather(*tasks)
+
     for idx, (translated_chunk, original_chunk) in enumerate(zip(translated_parts, subtitle_parts)):
+
         # Split the chunk into individual subtitle texts, respecting escaped '<SEP>>'
+
         if translated_chunk is not None:
             subtitle_texts = re.split(r'<SEP>', translated_chunk)
         else:
@@ -276,7 +315,7 @@ async def main(input_path, output_file, language):
             tasks = [translate_subtitle_part(session, part, movie_info, language) for part in subtitle_parts]
             translated_parts = await asyncio.gather(*tasks)
 
-        final_subtitle = reassemble_subtitle(translated_parts, time_codes, subtitle_parts)
+        final_subtitle = await reassemble_subtitle(translated_parts, time_codes, subtitle_parts, movie_info, language)
 
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(final_subtitle)
