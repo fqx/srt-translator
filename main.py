@@ -13,6 +13,7 @@ import json
 import tmdbsimple as tmdb
 from fuzzywuzzy import fuzz
 import chardet
+import guessit
 
 # load env
 load_dotenv()
@@ -59,38 +60,59 @@ def read_file_with_auto_encoding(file_path):
     raise ValueError(f"Unable to decode the file {file_path} with any of the attempted encodings.")
 
 
-async def get_movie_info(filename):
+def get_movie_info(filename):
     """
     From the subtitle filename, identify the movie/TV show and get its plot summary from TMDB
     """
     base_name = os.path.basename(filename)
     movie_name = os.path.splitext(base_name)[0]
-    logging.info(f"Identified movie: {movie_name}")
+    logging.info(f"Identifying movie: {movie_name}")
+    guess = guessit.guessit(movie_name)
+    title = guess.get('title')
+    year = guess.get('year')
+
+    # Determine if it's a movie or TV show
+    type = guess.get('type', 'movie')  # Default to movie if type is not specified
 
     # Search for the movie
     search = tmdb.Search()
     response = search.movie(query=movie_name)
 
-    if not search.results:
-        logging.warning(f"No results found for '{movie_name}'")
-        return f"No plot summary available for '{movie_name}'."
+    if type == 'episode':
+        # For TV shows, we need to search for the series first
+        if year:
+            response = search.tv(query=title, first_air_date_year=year)
+        else:
+            response = search.tv(query=title)
 
-    # Find the best match using fuzzy string matching
-    best_match = max(search.results, key=lambda x: fuzz.ratio(x['title'].lower(), movie_name.lower()))
+        if search.results:
+            show = search.results[0]
+            show_details = tmdb.TV(show['id']).info()
 
-    # Get detailed info for the best match
-    movie = tmdb.Movies(best_match['id'])
-    response = movie.info()
+            # Try to get specific episode info if available
+            season_number = guess.get('season')
+            episode_number = guess.get('episode')
 
-    # Get the overview (plot summary)
-    plot_summary = movie.overview
+            if season_number and episode_number:
+                episode = tmdb.TV_Episodes(show['id'], season_number, episode_number).info()
+                return f"Series: {show_details['name']}\nOverview: {show_details['overview']}\n\nEpisode: {episode.get('name', 'Unknown')}\nEpisode Plot: {episode.get('overview', 'No specific episode plot available.')}"
+            else:
+                return f"Series: {show_details['name']}\nOverview: {show_details['overview']}"
+        else:
+            return "No TV show information found."
+    else:
+        # For movies
+        if year:
+            response = search.movie(query=title, year=year)
+        else:
+            response = search.movie(query=title)
 
-    if not plot_summary:
-        logging.warning(f"No plot summary available for '{movie.title}'")
-        return f"No plot summary available for '{movie.title}'."
-
-    logging.info(f"Found plot summary for '{movie.title}' (ID: {movie.id})")
-    return f"Plot summary for '{movie.title}': {plot_summary}"
+        if search.results:
+            movie = search.results[0]
+            movie_details = tmdb.Movies(movie['id']).info()
+            return f"Movie: {movie_details['title']}\nOverview: {movie_details['overview']}"
+        else:
+            return f"No plot summary available for {movie_name}"
 
 
 def split_subtitle(subtitle_content, target_tokens=200):
@@ -328,7 +350,7 @@ async def main(input_path, output_file, language):
             # Create the new output filename
             output_file = f"{input_base}.{lang_code}{input_ext}"
 
-        movie_info = await get_movie_info(input_file)
+        movie_info = get_movie_info(input_file)
         global latest_context
         latest_context = movie_info
 
