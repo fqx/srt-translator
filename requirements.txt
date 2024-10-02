@@ -18,3 +18,4 @@ tqdm==4.66.5
 urllib3==2.2.3
 yarl==1.12.1
 chardet~=5.2.0
+guessit~=3.8.0
