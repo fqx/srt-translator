@@ -266,7 +266,10 @@ async def validation(translated_chunk, original_chunk, movie_info, language, con
         logging.warning(f"Validation failed. {attempt} attempts to get a new translation.")
         async with aiohttp.ClientSession() as session:
             translated_chunk, context = await translate_subtitle_part(session, original_chunk, movie_info, language, context)
-            translated_chunk_list = re.split(r'<SEP>', translated_chunk)
+            try:
+                translated_chunk_list = re.split(r'<SEP>', translated_chunk)
+            except TypeError:
+                translated_chunk_list = original_chunk_list.append('')
 
         attempt += 1
 
