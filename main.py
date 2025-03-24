@@ -27,9 +27,6 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 # set logging
 logging.basicConfig(level=LOG_LEVEL, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Global variable to store the latest context.
-latest_context = ""
-
 # Semaphore for controlling concurrency.
 MAX_CONCURRENT_REQUESTS = 5
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
@@ -148,17 +145,15 @@ def split_subtitle(subtitle_content, target_tokens=200):
     return cleaned_parts, time_codes
 
 
-async def process_with_llm(session, text, story_background, language, max_retries=3):
+async def process_with_llm(session, text, story_background, language, context, max_retries=3):
     """
     Use LLM (OpenAI API) for text translation and context generation, including retry logic.
     """
-    global latest_context
-
     lang = Language.get(language).display_name()
 
     prompt = f"""
     Story background: {story_background}
-    Current context: {latest_context}
+    Current context: {context}
     Translate the following text into {lang}, maintaining the tone and style appropriate for the story. 
     The '<SEP>' represents a seperator in the subtitle. Please PRESERVE these seperator and DO NOT add new seperator in your translation.
     Then, based on the translation, provide a brief update of the context:
@@ -225,20 +220,16 @@ async def process_with_llm(session, text, story_background, language, max_retrie
                         parsed_content = json.loads(content)
                         translation = parsed_content['translation']
                         new_context_summary = parsed_content['summary']
-                        # new_context_key_points = parsed_content['context_update']['key_points']
-
-                        # Update the latest context
-                        latest_context = f"{new_context_summary}"
 
                         # Log the translation for verification
                         logging.info(f"Translated: {translation}")
-                        logging.info(f"New context: {latest_context}")
+                        logging.info(f"New context: {new_context_summary}")
 
-                        return translation
+                        return translation, new_context_summary
                     except json.JSONDecodeError as e:
                         logging.error(f"Failed to parse JSON response: {e}")
                         logging.error(f"Raw content: {content}")
-                        return None
+                        return None, context
         except Exception as e:
             if attempt < max_retries - 1:
                 wait_time = (2 ** attempt) + random.uniform(0, 1)
@@ -246,12 +237,12 @@ async def process_with_llm(session, text, story_background, language, max_retrie
                 await asyncio.sleep(wait_time)
             else:
                 logging.error(f"Failed to process after {max_retries} attempts: {e}")
-                return text
+                return text, context
 
-    return text  # If all retries fail, return the original text.
+    return text, context  # If all retries fail, return the original text and context.
 
 
-async def validation(translated_chunk, original_chunk, movie_info, language, max_retries=3):
+async def validation(translated_chunk, original_chunk, movie_info, language, context, max_retries=3):
     """
     check the validation of translated_chunk
     """
@@ -274,7 +265,7 @@ async def validation(translated_chunk, original_chunk, movie_info, language, max
 
         logging.warning(f"Validation failed. {attempt} attempts to get a new translation.")
         async with aiohttp.ClientSession() as session:
-            translated_chunk = await translate_subtitle_part(session, original_chunk, movie_info, language)
+            translated_chunk, context = await translate_subtitle_part(session, original_chunk, movie_info, language, context)
             translated_chunk_list = re.split(r'<SEP>', translated_chunk)
 
         attempt += 1
@@ -284,14 +275,14 @@ async def validation(translated_chunk, original_chunk, movie_info, language, max
         return translated_chunk
 
 
-async def reassemble_subtitle(translated_parts, time_codes, subtitle_parts, movie_info, language):
+async def reassemble_subtitle(translated_parts, time_codes, subtitle_parts, movie_info, language, context):
     """
     Reassemble the translated text with time codes and format characters
     """
     reassembled = []
     time_code_index = 0
 
-    tasks = [validation(translated_chunk, original_chunk, movie_info, language) for (translated_chunk, original_chunk) in zip(translated_parts, subtitle_parts)]
+    tasks = [validation(translated_chunk, original_chunk, movie_info, language, context) for (translated_chunk, original_chunk) in zip(translated_parts, subtitle_parts)]
     translated_parts = await asyncio.gather(*tasks)
 
     for idx, (translated_chunk, original_chunk) in enumerate(zip(translated_parts, subtitle_parts)):
@@ -317,11 +308,12 @@ async def reassemble_subtitle(translated_parts, time_codes, subtitle_parts, movi
     return '\n\n'.join(reassembled)
 
 
-async def translate_subtitle_part(session, part, story_background, language):
+async def translate_subtitle_part(session, part, story_background, language, context):
     """
     Translate individual subtitle parts.
     """
-    return await process_with_llm(session, part, story_background, language)
+    translation, new_context = await process_with_llm(session, part, story_background, language, context)
+    return translation, new_context
 
 
 async def main(input_path, output_file, language):
@@ -351,18 +343,19 @@ async def main(input_path, output_file, language):
             output_file = f"{input_base}.{lang_code}{input_ext}"
 
         movie_info = get_movie_info(input_file)
-        global latest_context
-        latest_context = movie_info
+        context = movie_info
 
         subtitle_content = read_file_with_auto_encoding(input_file)
 
         subtitle_parts, time_codes = split_subtitle(subtitle_content)
 
         async with aiohttp.ClientSession() as session:
-            tasks = [translate_subtitle_part(session, part, movie_info, language) for part in subtitle_parts]
-            translated_parts = await asyncio.gather(*tasks)
+            translated_parts = []
+            for part in subtitle_parts:
+                translation, context = await translate_subtitle_part(session, part, movie_info, language, context)
+                translated_parts.append(translation)
 
-        final_subtitle = await reassemble_subtitle(translated_parts, time_codes, subtitle_parts, movie_info, language)
+        final_subtitle = await reassemble_subtitle(translated_parts, time_codes, subtitle_parts, movie_info, language, context)
 
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(final_subtitle)
