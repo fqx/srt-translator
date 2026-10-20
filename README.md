@@ -14,7 +14,7 @@ This Python program translates subtitle files (SRT format) from one language to 
 
 ## Requirements
 
-- Python 3.7+
+- Python 3.10+ (offline smoke tests verified with Python 3.11)
 - OpenAI API key
 - TMDB API key
 
@@ -29,7 +29,11 @@ cd srt-translator
 
 2. Install the required packages:
 
-`pip install -r requirements.txt`
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip check
+```
 
 3. Create a `.env` file in the project root and add your API keys:
 
@@ -59,6 +63,24 @@ python main.py -i “Movie_Subtitle.srt” -o “Movie_Subtitle_Translated.srt�
 - The program uses the filename to identify the movie and retrieve its plot summary from TMDB. Ensure that your subtitle files are named accurately.
 - The translation process may take some time depending on the length of the subtitle file and the API response times.
 - Make sure you have sufficient credits in your OpenAI account, as the translation process consumes API tokens.
+
+## Offline tests
+
+Run `.venv/bin/python -m unittest discover -s tests -v` and
+`.venv/bin/python main.py --help` after installation. The tests use placeholder
+keys, disable dotenv loading and inherited proxies, and exercise subtitle
+translation and TMDB requests through a loopback mock HTTP server. No API
+account or paid service is needed. The server requires permission to bind a
+loopback socket.
+
+The proxy tests mock TLS handshakes to check urllib3 2.8.0's proxy-specific
+certificate policy in both CONNECT and HTTPS forwarding modes. This is not a
+live corporate-proxy interoperability test. Requests/TMDB uses CONNECT by
+default; the aiohttp translation path does not use urllib3. If using a custom
+urllib3 HTTPS forwarding proxy, configure proxy CAs and client certificates in
+`proxy_ssl_context`, and proxy identity in `proxy_assert_hostname` or
+`proxy_assert_fingerprint`. Destination credentials and identity overrides no
+longer apply to the proxy handshake. See the [upstream release notes](https://github.com/urllib3/urllib3/releases/tag/2.8.0).
 
 ## License
 
