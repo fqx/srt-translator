@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import certifi
 import dotenv
 import requests
 import urllib3
@@ -181,6 +182,30 @@ class ProxyTLSTests(unittest.TestCase):
             manager = adapter.proxy_manager_for('https://proxy.invalid:443')
             self.assertFalse(manager.proxy_config.use_forwarding_for_https)
             self.assertIsNone(manager.proxy_config.ssl_context)
+
+
+class CertificateBundleTests(unittest.TestCase):
+    def test_bundle_removes_compromised_root_and_retains_unaffected_roots(self):
+        context = ssl.create_default_context(cafile=certifi.where())
+        names = {value for cert in context.get_ca_certs()
+                 for rdn in cert['subject'] for key, value in rdn
+                 if key == 'commonName'}
+        self.assertNotIn('emSign ECC Root CA - G3', names)
+        self.assertTrue({'emSign Root CA - G1', 'emSign Root CA - C1',
+                         'emSign ECC Root CA - C3'}.issubset(names))
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+
+    def test_requests_default_ca_path_uses_installed_certifi(self):
+        bundle = Path(certifi.where()).resolve()
+        self.assertEqual(Path(requests.certs.where()).resolve(), bundle)
+        self.assertEqual(Path(requests.adapters.DEFAULT_CA_BUNDLE_PATH).resolve(), bundle)
+        adapter = requests.adapters.HTTPAdapter()
+        self.addCleanup(adapter.close)
+        connection = Mock()
+        adapter.cert_verify(connection, 'https://offline.invalid', True, None)
+        self.assertEqual(Path(connection.ca_certs).resolve(), bundle)
+        self.assertEqual(connection.cert_reqs, 'CERT_REQUIRED')
 
 
 if __name__ == '__main__':
